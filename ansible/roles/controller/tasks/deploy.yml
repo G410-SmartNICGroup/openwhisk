@@ -331,6 +331,7 @@
     controller_volumes:
        - "{{ whisk_logs_dir }}/{{ controller_name }}:/logs"
        - "{{ controller.confdir }}/{{ controller_name }}:/conf"
+       - "/home/owuser:/home/owuser"
 
 - name: check if coverage collection is enabled
   set_fact:

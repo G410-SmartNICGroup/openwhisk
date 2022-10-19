@@ -84,5 +84,16 @@ printProtocLogs.configure {
     file("$project.rootDir/build/akka-grpc-gradle-plugin.log").text = "x"
 }
 
+protobuf {
+    protoc {
+        // for apple m1, please add protoc_platform=osx-x86_64 in $HOME/.gradle/gradle.properties
+        if (project.hasProperty('protoc_platform')) {
+            artifact = "com.google.protobuf:protoc:3.5.0:${protoc_platform}"
+        } else {
+            artifact = "com.google.protobuf:protoc:3.5.0"
+        }
+    }
+}
+
 mainClassName = "org.apache.openwhisk.core.scheduler.Scheduler"
 applicationDefaultJvmArgs = ["-Djava.security.egd=file:/dev/./urandom"]

@@ -87,7 +87,7 @@
     kafka_image: "{{ kafka.docker_image | default ('wurstmeister/kafka:' ~ kafka.version) }}"
   docker_container:
     name: kafka{{ groups['kafkas'].index(inventory_hostname) }}
-    image: "{{ kafka_image }}"
+    image: "wurstmeister/kafka:latest"
     state: started
     recreate: true
     restart_policy: "{{ docker.restart.policy }}"
