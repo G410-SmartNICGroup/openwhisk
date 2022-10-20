@@ -1,4 +1,4 @@
-# Install k8s
+# 	Install k8s
 
 ## Prerequisites
 
@@ -425,7 +425,7 @@ export OW_DB=CouchDB
 export OW_DB_USERNAME=admin
 export OW_DB_PASSWORD=123456
 export OW_DB_PROTOCOL=http
-export OW_DB_HOST=172.17.0.1
+export OW_DB_HOST=192.168.33.20
 export OW_DB_PORT=5984
 
 ansible-playbook -i environments/$ENVIRONMENT setup.yml
@@ -454,7 +454,7 @@ cd ansible
 ansible-playbook -i environments/$ENVIRONMENT couchdb.yml
 ansible-playbook -i environments/$ENVIRONMENT initdb.yml
 ansible-playbook -i environments/$ENVIRONMENT wipe.yml
-ansible-playbook -i environments/$ENVIRONMENT openwhisk.yml
+ansible-playbook -vvv -i environments/$ENVIRONMENT openwhisk.yml
 
 # installs a catalog of public packages and actions
 ansible-playbook -i environments/$ENVIRONMENT postdeploy.yml
@@ -568,6 +568,7 @@ ansible-playbook -i environments/$ENVIRONMENT routemgmt.yml
 
 - rm有可能没有释放空间：https://m.php.cn/article/491987.html。以及，docker可能存在大量缓存，可以参考https://moxiao.blog.csdn.net/article/details/84404519删去
 - 完全清除docker：https://stackoverflow.com/questions/46672001/is-it-safe-to-clean-docker-overlay2
+- 镜像传递：https://blog.csdn.net/yimenglin/article/details/106017991
 - You need to run `initdb.yml` **every time** you do a fresh deploy CouchDB to initialize the subjects database.
 - The `wipe.yml` playbook should be run on a fresh deployment only, otherwise actions and activations will be lost.
 - Run `postdeploy.yml` after deployment to install a catalog of useful packages.
@@ -613,6 +614,7 @@ Once the CLI is installed, you can [use it to work with Whisk](https://github.co
 
   ```
   docker run -d -p 8080:8080 whisk/action-nodejs-v14
+  docker run -d -p 8080:8080 whisk/action-python-v3.7
   ```
 
 + hello.js
@@ -642,7 +644,72 @@ Once the CLI is installed, you can [use it to work with Whisk](https://github.co
 
   ```
   wsk action update hellotest hello.js --docker whisk/action-nodejs-v14 -i
+  wsk action update hellotest hello.py --docker whisk/action-python-v3.7 -i
   ```
+
+# distributed
+
++ 需要在slave节点上都安装python与pip
+
++ 在environment下copy local文件夹为distributed，然后修改hosts如下：
+
+  ```
+  ; the first parameter in a host is the inventory_hostname
+  
+  192.168.33.20  ansible_connection=ssh ansible_user=root
+  192.168.33.169 ansible_connection=ssh ansible_user=root
+  192.168.33.122 ansible_connection=ssh ansible_user=root
+  ansible ansible_connection=local
+  
+  [edge]
+  192.168.33.20          ansible_host=192.168.33.20 ansible_connection=ssh
+  
+  [controllers]
+  controller0         ansible_host=192.168.33.20 ansible_connection=ssh
+  ;
+  [kafkas]
+  kafka0              ansible_host=192.168.33.20 ansible_connection=ssh
+  
+  [zookeepers:children]
+  kafkas
+  
+  [invokers]
+  invoker0            ansible_host=192.168.33.169 ansible_connection=ssh
+  invoker1            ansible_host=192.168.33.122 ansible_connection=ssh
+  
+  [schedulers]
+  scheduler0       ansible_host=192.168.33.20 ansible_connection=ssh
+  
+  ; db group is only used if db.provider is CouchDB
+  [db]
+  192.168.33.20          ansible_host=192.168.33.20 ansible_connection=ssh
+  
+  [elasticsearch:children]
+  db
+  
+  [redis]
+  192.168.33.20          ansible_host=192.168.33.20 ansible_connection=ssh
+  
+  [apigateway]
+  192.168.33.20          ansible_host=192.168.33.20 ansible_connection=ssh
+  
+  [etcd]
+  etcd0            ansible_host=192.168.33.20 ansible_connection=ssh
+  ```
+
+  一些说明：
+
+  + 各台机器之间应该实现ssh互通，见https://blog.csdn.net/qq_44212783/article/details/126029102
+  + 所有的机器都需要加在`ansible ansible_connection=local`上面，而且第一个是host
+  + `edge, controllers, kafkas, schedulers, db, redis, apitgateway, etcd`都填host
+  + `invoker`填各个invoker的ip
+  + 生成`db_local.ini`时，宿主host也应该为host的ip，而非172.17.0.1
+
++ 看https://blog.csdn.net/yimenglin/article/details/106017991，把invoker的镜像传过去slave节点。再用`docker tag [image id] [name]:[版本]`手动打上tag
+
++ 如果salve磁盘不足，修改`roles/invoker/tasks/deploy.yml`，让它不要执行`pull runtime action images per manifest`与`pull blackboxes action images per manifest`。(修改when)
+
++ 记得`ENVIRONMENT=distributed`，之后再重跑之前一系列东西(可以出了postdeploy跟routemgmt)。注意invoker可能会拉取一些东西，不要管，等它拉取的差不多了就能work了。把`openwhisk/action-nodejs-v14:nightly `传过去，或者tag一下这个东西。或者如果缺什么东西，记得去看log，会报ERROR，把这东西补上去即可，否则会被标记为unhealthy而无法执行。
 
 ## 一些文件
 
@@ -906,4 +973,6 @@ Once the CLI is installed, you can [use it to work with Whisk](https://github.co
   
   EXPOSE 8080
   CMD ["./init.sh", "0"]
+  
+  192.168.33.20
   ```
