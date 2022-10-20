@@ -32,38 +32,6 @@
   retries: "{{ docker.pull.retries }}"
   delay: "{{ docker.pull.delay }}"
 
-###
-# This task assumes that the images are local to the invoker host already if there is no prefix or tag
-# which is usually the case for a local deployment. A distributed deployment will specify the prefix, or tag
-# to pull the images from the appropriate registry. If a runtimes_registry is optionally specified, pull images
-# from there; this permits a (private) registry to be used for caching the images. The registry if specified
-# must include a trailing '/'.
-#
-- name: "pull runtime action images per manifest"
-  shell: "docker pull {{runtimes_registry | default()}}{{inv_item.prefix}}/{{inv_item.name}}:{{inv_item.tag | default()}}"
-  loop: "{{ runtimesManifest.runtimes.values() | sum(start=[]) | selectattr('deprecated', 'equalto',false)  | map(attribute='image') | list | unique }}"
-  when: skip_pull_runtimes is not defined or not (skip_pull_runtimes == True or skip_pull_runtimes.lower() == "true")
-  register: result
-  until: (result.rc == 0)
-  retries: "{{ docker.pull.retries }}"
-  delay: "{{ docker.pull.delay }}"
-  loop_control:
-    loop_var: inv_item
-
-###
-# See comment above for pulling other runtime images.
-#
-- name: "pull blackboxes action images per manifest"
-  shell: "docker pull {{runtimes_registry | default()}}{{inv_item.prefix}}/{{inv_item.name}}:{{inv_item.tag | default()}}"
-  loop: "{{ runtimesManifest.blackboxes }}"
-  when: skip_pull_runtimes is not defined or not (skip_pull_runtimes == True or skip_pull_runtimes.lower() == "true")
-  register: result
-  until: (result.rc == 0)
-  retries: "{{ docker.pull.retries }}"
-  delay: "{{ docker.pull.delay }}"
-  loop_control:
-    loop_var: inv_item
-
 - name: "determine docker root dir on docker-machine"
   uri:  url="http://{{ ansible_host }}:{{ docker.port }}/info" return_content=yes
   register: dockerInfo_output
@@ -385,7 +353,7 @@
 
 - name: define options when deploying invoker on Ubuntu
   set_fact:
-    volumes: "{{ volumes|default('') }},/usr/lib/x86_64-linux-gnu/libapparmor.so.1:/usr/lib/x86_64-linux-gnu/libapparmor.so.1"
+    volumes: "{{ volumes|default('') }},/usr/lib/aarch64-linux-gnu/libapparmor.so.1:/usr/lib/aarch64-linux-gnu/libapparmor.so.1"
   when: ansible_distribution == "Ubuntu"
 
 - name: check if coverage collection is enabled
@@ -441,6 +409,6 @@
     client_cert: "{{ invoker.confdir }}/{{ invoker_name }}/{{ invoker.ssl.cert }}"
   register: result
   until: result.status == 200
-  retries: 12
+  retries: 32
   delay: 5
   when: not lean
