@@ -295,11 +295,11 @@ helm install owdev openwhisk/openwhisk -n openwhisk --create-namespace -f myclus
 ## Install wsk cli
 
 ```
-wget https://github.com/apache/openwhisk-cli/releases/download/1.2.0/OpenWhisk_CLI-1.2.0-linux-arm64.tgz
+wget https://github.com/apache/openwhisk-cli/releases/download/1.2.0/OpenWhisk_CLI-1.2.0-linux-a64.tgz
 tar zxvf OpenWhisk_CLI-1.2.0-linux-arm64.tgz 
 rm OpenWhisk_CLI-1.2.0-linux-arm64.tgz 
 rm LICENSE.txt
-rm READMD.md
+rm README.md
 rm NOTICE.txt
 chmod 777 wsk
 mv wsk /usr/bin
@@ -373,7 +373,7 @@ sudo pip install jinja2==3.0.1
 Set the environment for the commands below by running. 这句话每次换终端都需要重新跑
 
 ```
-ENVIRONMENT=local  # or docker-machine or jenkins or vagrant
+ENVIRONMENT=distributed # or docker-machine or jenkins or vagrant
 ```
 
 The default environment is `local` which works for Ubuntu and Docker for Mac. To use the default environment, you may omit the `-i` parameter entirely. For older Mac installation using Docker Machine, use `-i environments/docker-machine`.
@@ -387,7 +387,7 @@ When using [pyenv](https://github.com/pyenv/pyenv) to manage your versions of py
 To make sure ansible uses the same version of python which you configured, execute:
 
 ```
-echo -e "\nansible_python_interpreter: `which python`\n" >> ./environments/local/group_vars/all
+echo -e "\nansible_python_interpreter: `which python`\n" >> ./environments/distributed/group_vars/all
 ```
 
 #### Preserving configuration and log directories on reboot
@@ -425,7 +425,7 @@ export OW_DB=CouchDB
 export OW_DB_USERNAME=admin
 export OW_DB_PASSWORD=123456
 export OW_DB_PROTOCOL=http
-export OW_DB_HOST=192.168.33.20
+export OW_DB_HOST=192.168.1.5
 export OW_DB_PORT=5984
 
 ansible-playbook -i environments/$ENVIRONMENT setup.yml
@@ -454,7 +454,7 @@ cd ansible
 ansible-playbook -i environments/$ENVIRONMENT couchdb.yml
 ansible-playbook -i environments/$ENVIRONMENT initdb.yml
 ansible-playbook -i environments/$ENVIRONMENT wipe.yml
-ansible-playbook -vvv -i environments/$ENVIRONMENT openwhisk.yml
+ansible-playbook -i environments/$ENVIRONMENT openwhisk.yml -e controller_loadbalancer_spi=org.apache.openwhisk.core.loadBalancer.LeastLoadBalancer
 
 # installs a catalog of public packages and actions
 ansible-playbook -i environments/$ENVIRONMENT postdeploy.yml
@@ -471,6 +471,7 @@ ansible-playbook -i environments/$ENVIRONMENT routemgmt.yml
   - pull access denied for scala, repository does not exist or may require 'docker login': denied: requested access to the resource is denied，参考https://github.com/apache/openwhisk/issues/5159。再不行就在docker build … -t …的-t后面加上`--no-cache`。docker版本最好升级到最新版本，旧版本有问题
   - linux/arm64/v8没有zookeeper：修改roles/zookerper/tasks/deploy.yml文件的image，直接修改成存在的对应版本。原有版本是3.4.0，不存在linux/arm64/v8版本
   - FAILED - RETRYING: wait until the Zookeeper in this host is up and running ：https://github.com/apache/openwhisk/commit/7a283a0a71f20e9658d06b14d13d06add99360ea
+  - standalone有问题，直接`-x :core:standalone:compileScala`跳过
 
 - `ansible-playbook -i environments/$ENVIRONMENT openwhisk.yml`需要进行如下修改：
 
@@ -626,9 +627,14 @@ Once the CLI is installed, you can [use it to work with Whisk](https://github.co
   }
   ```
 
-+ `wsk action create hellotest hello.js -i`：ok: created action hellotest
++ invoke：
 
-+ `wsk action invoke hellotest --result -i`：
+  ```
+  wsk action invoke hellojs --result -i -d
+  wsk action invoke hellopy --result -i -d
+  ```
+
+  结果：
 
   ```reStructuredText
   {
@@ -643,9 +649,11 @@ Once the CLI is installed, you can [use it to work with Whisk](https://github.co
 + 如果test的container不符合预期：
 
   ```
-  wsk action update hellotest hello.js --docker whisk/action-nodejs-v14 -i
-  wsk action update hellotest hello.py --docker whisk/action-python-v3.7 -i
+  wsk action update hellojs hello.js --docker whisk/action-nodejs-v14 -i
+  wsk action update hellopy hello.py --docker whisk/action-python-v3.7 -i
   ```
+
++ https://github.com/PrincetonUniversity/faas-profiler，记得改opewhisk/ansible/group\_all/all里面的limit，参见Important Note
 
 # distributed
 
@@ -697,6 +705,50 @@ Once the CLI is installed, you can [use it to work with Whisk](https://github.co
   etcd0            ansible_host=192.168.33.20 ansible_connection=ssh
   ```
 
+  ```
+  ; the first parameter in a host is the inventory_hostname
+  
+  192.168.1.5  ansible_connection=ssh ansible_user=root
+  192.168.1.40 ansible_connection=ssh ansible_user=root
+  192.168.1.50 ansible_connection=ssh ansible_user=root
+  ansible ansible_connection=local
+  
+  [edge]
+  192.168.1.5          ansible_host=192.168.1.5 ansible_connection=ssh
+  
+  [controllers]
+  controller0         ansible_host=192.168.1.5 ansible_connection=ssh
+  ;
+  [kafkas]
+  kafka0              ansible_host=192.168.1.5 ansible_connection=ssh
+  
+  [zookeepers:children]
+  kafkas
+  
+  [invokers]
+  invoker0            ansible_host=192.168.1.40  ansible_connection=ssh
+  invoker1            ansible_host=192.168.1.50  ansible_connection=ssh
+  
+  [schedulers]
+  scheduler0       ansible_host=192.168.1.5 ansible_connection=ssh
+  
+  ; db group is only used if db.provider is CouchDB
+  [db]
+  192.168.1.5          ansible_host=192.168.1.5 ansible_connection=ssh
+  
+  [elasticsearch:children]
+  db
+  
+  [redis]
+  192.168.1.5          ansible_host=192.168.1.5 ansible_connection=ssh
+  
+  [apigateway]
+  192.168.1.5          ansible_host=192.168.1.5 ansible_connection=ssh
+  
+  [etcd]
+  etcd0            ansible_host=192.168.1.5 ansible_connection=ssh
+  ```
+
   一些说明：
 
   + 各台机器之间应该实现ssh互通，见https://blog.csdn.net/qq_44212783/article/details/126029102
@@ -710,6 +762,8 @@ Once the CLI is installed, you can [use it to work with Whisk](https://github.co
 + 如果salve磁盘不足，修改`roles/invoker/tasks/deploy.yml`，让它不要执行`pull runtime action images per manifest`与`pull blackboxes action images per manifest`。(修改when)
 
 + 记得`ENVIRONMENT=distributed`，之后再重跑之前一系列东西(可以出了postdeploy跟routemgmt)。注意invoker可能会拉取一些东西，不要管，等它拉取的差不多了就能work了。把`openwhisk/action-nodejs-v14:nightly `传过去，或者tag一下这个东西。或者如果缺什么东西，记得去看log，会报ERROR，把这东西补上去即可，否则会被标记为unhealthy而无法执行。
+
++ 记得修改wsk host
 
 ## 一些文件
 
@@ -976,3 +1030,12 @@ Once the CLI is installed, you can [use it to work with Whisk](https://github.co
   
   192.168.33.20
   ```
+
+# 修改controller
+
++ 单独编译controller：`./gradlew :core:controller:distDocker`
++ 指定跑loadbalancer：`ansible-playbook -i environments/$ENVIRONMENT controller.yml -e controller_loadbalancer_spi=org.apache.openwhisk.core.loadBalancer.LeastLoadBalancer`
++ 注意，controller在docker里面无法访问容器外面的东西，故需要对`ansible/roles/controller/tasks/deploy.yml`里面进行挂载。例如，`"/home/huazhang/openwhisk/core/scheduler/ipAddr:/ipAddr"`，这样只需要修改ipAddr.conf即可。
++ `group[...]`指的是hosts里面对应的内容
++ scala连接redis时，连接必须`group[redis]`里面的内容一致，即`distributed/hosts`一致，其ip为192.168.33.20！0.0.0.0或172.17.0.1都无法连接上，且更新时必须更新192.168.33.20
++ 指定redis的config：https://stackoverflow.com/questions/37402551/what-is-the-location-of-redis-conf-in-official-docker-image，https://github.com/docker-library/redis/issues/188#issuecomment-506610180。模板：https://github.com/redis/redis/blob/6.0/redis.conf，https://redis.io/docs/manual/config/。例如，把/home/huazhang/openwhisk/redis.conf挂载进去
