@@ -629,3 +629,4 @@ case class ActivationEntry(id: ActivationId,
                            isBlackbox: Boolean,
                            isBlocking: Boolean,
                            controllerId: ControllerInstanceId = ControllerInstanceId("0"))
+

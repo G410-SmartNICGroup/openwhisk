@@ -60,6 +60,10 @@ subprojects {
                 mavenCentral()
             }
 
+            dependencies {
+              compile group: 'redis.clients', name: 'jedis', version:'3.6.0'
+            }
+
             tasks.withType(ScalaCompile) {
                 scalaCompileOptions.additionalParameters = gradle.scala.compileFlags
                 scalaCompileOptions.forkOptions.jvmArgs = ["-Xss2m"]
@@ -130,3 +134,4 @@ def configureUnixClasspath(File script) {
         }
         .join('\n')
 }
+

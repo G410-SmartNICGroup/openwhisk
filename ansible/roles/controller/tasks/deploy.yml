@@ -332,6 +332,7 @@
        - "{{ whisk_logs_dir }}/{{ controller_name }}:/logs"
        - "{{ controller.confdir }}/{{ controller_name }}:/conf"
        - "/home/owuser:/home/owuser"
+       - "/home/huazhang/openwhisk/core/scheduler/ipAddr:/ipAddr"
 
 - name: check if coverage collection is enabled
   set_fact:

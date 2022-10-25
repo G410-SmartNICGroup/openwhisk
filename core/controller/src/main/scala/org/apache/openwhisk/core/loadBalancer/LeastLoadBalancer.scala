@@ -37,7 +37,13 @@ import org.apache.openwhisk.core.{ConfigKeys, WhiskConfig}
 import org.apache.openwhisk.spi.SpiLoader
 
 import scala.concurrent.Future
-import scala.util.Random
+
+// import org.apache.http.client.methods.HttpGet
+// import org.apache.http.impl.client.HttpClients
+// import org.apache.http.util.EntityUtils
+// import scala.io.Source
+import java.time.Instant
+import redis.clients.jedis.Jedis
 
 
 class LeastLoadBalancer(
@@ -45,6 +51,7 @@ class LeastLoadBalancer(
   controllerInstance: ControllerInstanceId,
   feedFactory: FeedFactory,
   invokerPoolFactory: InvokerPoolFactory,
+  redisClient: Jedis,
   implicit val messagingProvider: MessagingProvider = SpiLoader.get[MessagingProvider])(
   implicit actorSystem: ActorSystem,
   logging: Logging)
@@ -62,7 +69,7 @@ class LeastLoadBalancer(
   }
 
   /** State needed for scheduling. */
-  val schedulingState = LeastLoadBalancerState()(lbConfig)
+  val schedulingState = LeastLoadBalancerState()(redisClient, lbConfig)
 
   /**
    * Monitors invoker supervision and the cluster to update the state sequentially
@@ -203,13 +210,15 @@ object LeastLoadBalancer extends LoadBalancerProvider {
               maxPeek = 128),
             monitor))
       }
-
     }
+    val redisClient = new Jedis("192.168.33.20", 6379)
+    redisClient.auth("openwhisk")
     new LeastLoadBalancer(
       whiskConfig,
       instance,
       createFeedFactory(whiskConfig, instance),
-      invokerPoolFactory)
+      invokerPoolFactory,
+      redisClient)
   }
 
   def requiredProperties: Map[String, String] = kafkaHosts
@@ -271,6 +280,7 @@ case class LeastLoadBalancerState(
   protected[loadBalancer] var _invokerSlots: IndexedSeq[NestedSemaphore[FullyQualifiedEntityName]] =
     IndexedSeq.empty[NestedSemaphore[FullyQualifiedEntityName]],
   private var _clusterSize: Int = 1)(
+  redisClient: Jedis,
   lbConfig: ShardingContainerPoolBalancerConfig =
     loadConfigOrThrow[ShardingContainerPoolBalancerConfig](ConfigKeys.loadbalancer))(implicit logging: Logging) {
 
@@ -280,6 +290,7 @@ case class LeastLoadBalancerState(
   // means, that there is no differentiation between managed and blackbox invokers.
   // If the sum is below 1.0 with the initial values from config, the blackbox fraction will be set higher than
   // specified in config and adapted to the managed fraction.
+  private val redisClient_ = redisClient
   private val managedFraction: Double = Math.max(0.0, Math.min(1.0, lbConfig.managedFraction))
   private val blackboxFraction: Double = Math.max(1.0 - managedFraction, Math.min(1.0, lbConfig.blackboxFraction))
   logging.info(this, s"managedFraction = $managedFraction, blackboxFraction = $blackboxFraction")(
@@ -314,24 +325,94 @@ case class LeastLoadBalancerState(
     newTreshold
   }
 
-  def getLoad(invoker: InvokerInstanceId) : Double = {
-    //TODO: return the load of invoker
-    val rand = (new Random).nextInt(100).toDouble
+  //invoker0: line0, invoker1: line1, invoker2: line2, ...
+  // val ipAddrList = Source.fromFile("/ipAddr/ipAddr.conf").getLines.toList
+
+  /**
+   * @param ipAddr IP address to get your response
+   * @param requestType 0: load, 1: memory
+   * @return response we get from url
+   */
+  def getResponse(invokerIdx: Int, requestType: Int) : Double = {
+    val currentTime = Instant.now().toEpochMilli()
+    val resType = requestType match {
+      case 0  =>  "cpu"
+      case 1  =>  "mem"
+      case _  =>  ""
+    }
+    val request = resType + invokerIdx.toString
+    try {
+      val packetStr = Option(redisClient_.get(request))
+      val res = packetStr match {
+        case Some(str) => {
+          str.toDouble
+        }
+        case None => -1
+      }
+      val usedTime = Instant.now().toEpochMilli() - currentTime
+      logging.info(
+        this,
+        s"Response latency: ${usedTime}ms"
+      )
+      res
+    } catch {
+        case e: redis.clients.jedis.exceptions.JedisDataException => {
+          logging.warn(this, s"Failed to log into redis server, $e")
+          -1
+        }
+        case scala.util.control.NonFatal(t) => {
+          var trace = t.getStackTrace.map { trace => trace.toString() }.mkString("\n")
+          logging.error(this, s"Unknonwn error updating from Redis, '$t', at ${trace}")
+          -1
+        } 
+    }
+    /*
+    val currentTime = Instant.now().toEpochMilli()
+    val baseUrl = "http://" + ipAddrList(invokerIdx) + ":10086/"
+    val url = requestType match {
+      case 0  =>  baseUrl + "getVmCPU"
+      case 1  =>  baseUrl + "getVmMemory"
+      case _  =>  ""
+    }
     logging.info(
-    this,
-    s"${invoker}'s CPU: ${rand}%"
+      this,
+      s"URL is: ${url}")
+    val httpClient = HttpClients.createDefault() 
+    val get = new HttpGet(url)
+
+    val response = httpClient.execute(get)
+    val res = EntityUtils.toString(response.getEntity)
+    logging.info(
+      this,
+      s"Get response: ${res}"
     )
-    rand
+    val usedTime = Instant.now().toEpochMilli() - currentTime
+    logging.info(
+      this,
+      s"Response latency: ${usedTime}ms"
+    )
+    val stringList = res.split(":")
+    val len = stringList(1).length()
+    stringList(1).substring(0, len - 2).toDouble
+    */
+  }
+
+  def getLoad(invoker: InvokerInstanceId) : Double = {
+    val res = getResponse(invoker.toInt, 0)
+    logging.info(
+      this,
+      s"${invoker}'s CPU: ${res}%"
+    )
+    res
   }
 
   def getMem(invoker: InvokerInstanceId) : Double = {
-    //TODO: return the memory of invoker in MB.
-    val rand = ((new Random).nextInt(1024 - 128) + 128).toDouble
+    val res = getResponse(invoker.toInt, 1)
     logging.info(
-    this,
-    s"${invoker}'s Remain Memory: ${rand}MB"
+      this,
+      s"${invoker}'s Memory: ${res}MB"
     )
-    rand
+    res
   }
 
   /**
