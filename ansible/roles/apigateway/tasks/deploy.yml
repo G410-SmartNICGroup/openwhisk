@@ -20,7 +20,7 @@
 - name: (re)start apigateway
   docker_container:
     name: apigateway
-    image: "{{ apigateway.docker_image | default('openwhisk/apigateway:latest') }}"
+    image: "{{ apigateway.docker_image | default('openwhisk/apigateway:' ~ apigateway.version) }}"
     state: started
     recreate: true
     restart_policy: "{{ docker.restart.policy }}"
@@ -35,6 +35,7 @@
     ports:
       - "{{ apigateway.port.mgmt }}:8080"
       - "{{ apigateway.port.api }}:9000"
+    pull: "{{ apigateway_local_build is undefined }}"
 
 - name: wait until the API Gateway in this host is up and running
   uri:

@@ -87,7 +87,7 @@
     kafka_image: "{{ kafka.docker_image | default ('wurstmeister/kafka:' ~ kafka.version) }}"
   docker_container:
     name: kafka{{ groups['kafkas'].index(inventory_hostname) }}
-    image: "wurstmeister/kafka:latest"
+    image: "{{ kafka_image }}"
     state: started
     recreate: true
     restart_policy: "{{ docker.restart.policy }}"
@@ -106,5 +106,5 @@
     grep /brokers/ids/{{ groups['kafkas'].index(inventory_hostname) }}
   register: result
   until: (result.rc == 0)
-  retries: 32
+  retries: 10
   delay: 5

@@ -51,7 +51,6 @@ class LeastLoadBalancer(
   controllerInstance: ControllerInstanceId,
   feedFactory: FeedFactory,
   invokerPoolFactory: InvokerPoolFactory,
-  redisClient: Jedis,
   implicit val messagingProvider: MessagingProvider = SpiLoader.get[MessagingProvider])(
   implicit actorSystem: ActorSystem,
   logging: Logging)
@@ -69,7 +68,7 @@ class LeastLoadBalancer(
   }
 
   /** State needed for scheduling. */
-  val schedulingState = LeastLoadBalancerState()(redisClient, lbConfig)
+  val schedulingState = LeastLoadBalancerState()(lbConfig)
 
   /**
    * Monitors invoker supervision and the cluster to update the state sequentially
@@ -211,14 +210,11 @@ object LeastLoadBalancer extends LoadBalancerProvider {
             monitor))
       }
     }
-    val redisClient = new Jedis("192.168.33.20", 6379)
-    redisClient.auth("openwhisk")
     new LeastLoadBalancer(
       whiskConfig,
       instance,
       createFeedFactory(whiskConfig, instance),
-      invokerPoolFactory,
-      redisClient)
+      invokerPoolFactory)
   }
 
   def requiredProperties: Map[String, String] = kafkaHosts
@@ -279,8 +275,8 @@ case class LeastLoadBalancerState(
   private var _blackboxStepSizes: Seq[Int] = ShardingContainerPoolBalancer.pairwiseCoprimeNumbersUntil(0),
   protected[loadBalancer] var _invokerSlots: IndexedSeq[NestedSemaphore[FullyQualifiedEntityName]] =
     IndexedSeq.empty[NestedSemaphore[FullyQualifiedEntityName]],
-  private var _clusterSize: Int = 1)(
-  redisClient: Jedis,
+  private var _clusterSize: Int = 1,
+  private var _redisClient : Jedis = new Jedis("192.168.33.21", 6379))(
   lbConfig: ShardingContainerPoolBalancerConfig =
     loadConfigOrThrow[ShardingContainerPoolBalancerConfig](ConfigKeys.loadbalancer))(implicit logging: Logging) {
 
@@ -290,11 +286,11 @@ case class LeastLoadBalancerState(
   // means, that there is no differentiation between managed and blackbox invokers.
   // If the sum is below 1.0 with the initial values from config, the blackbox fraction will be set higher than
   // specified in config and adapted to the managed fraction.
-  private val redisClient_ = redisClient
   private val managedFraction: Double = Math.max(0.0, Math.min(1.0, lbConfig.managedFraction))
   private val blackboxFraction: Double = Math.max(1.0 - managedFraction, Math.min(1.0, lbConfig.blackboxFraction))
   logging.info(this, s"managedFraction = $managedFraction, blackboxFraction = $blackboxFraction")(
     TransactionId.loadbalancer)
+  _redisClient.auth("openwhisk")
 
   /** Getters for the variables, setting from the outside is only allowed through the update methods below */
   def invokers: IndexedSeq[InvokerHealth] = _invokers
@@ -342,7 +338,7 @@ case class LeastLoadBalancerState(
     }
     val request = resType + invokerIdx.toString
     try {
-      val packetStr = Option(redisClient_.get(request))
+      val packetStr = Option(_redisClient.get(request))
       val res = packetStr match {
         case Some(str) => {
           str.toDouble
@@ -359,6 +355,25 @@ case class LeastLoadBalancerState(
         case e: redis.clients.jedis.exceptions.JedisDataException => {
           logging.warn(this, s"Failed to log into redis server, $e")
           -1
+        }
+        case e: redis.clients.jedis.exceptions.JedisConnectionException => {
+          logging.warn(this, s"Failed to connect to redis client, restarting...")
+          _redisClient.close()
+          _redisClient = new Jedis("192.168.33.21", 6379)
+          _redisClient.auth("openwhisk")
+          val packetStr = Option(_redisClient.get(request))
+          val res = packetStr match {
+            case Some(str) => {
+              str.toDouble
+            }
+            case None => -1
+          }
+          val usedTime = Instant.now().toEpochMilli() - currentTime
+          logging.info(
+            this,
+            s"Response latency: ${usedTime}ms"
+          )
+          res
         }
         case scala.util.control.NonFatal(t) => {
           var trace = t.getStackTrace.map { trace => trace.toString() }.mkString("\n")

@@ -17,27 +17,34 @@
 ---
 # This role will install Kafka with Zookeeper in group 'kafka' in the environment inventory
 
-
 - name: (re)start zookeeper
   docker_container:
     name: zookeeper{{ groups['zookeepers'].index(inventory_hostname) }}
-    image: zookeeper:latest
+    image: zookeeper:{{ zookeeper.version }}
     state: started
     recreate: true
     restart_policy: "{{ docker.restart.policy }}"
     env:
         TZ: "{{ docker.timezone }}"
         ZOO_MY_ID: "{{ groups['zookeepers'].index(inventory_hostname) + 1 }}"
-    volumes:
-      - "/home/huazhang/openwhisk/ansible/conf:/conf"
+        ZOO_SERVERS: "{% set zhosts = [] %}
+                      {% for host in groups['zookeepers'] %}
+                        {% if host == inventory_hostname %}
+                          {{ zhosts.append('server.' + (loop.index|string) + '=' + '0.0.0.0:2888:3888') }}
+                        {% else %}
+                          {{ zhosts.append('server.' + (loop.index|string) + '=' + hostvars[host].ansible_host + ':' + ((2888+loop.index-1)|string) + ':' + ((3888+loop.index-1)|string) ) }}
+                        {% endif %}
+                      {% endfor %}
+                      {{ zhosts | join(' ') }}"
     ports:
       - "{{ zookeeper.port + groups['zookeepers'].index(inventory_hostname) }}:2181"
       - "{{ 2888 + groups['zookeepers'].index(inventory_hostname) }}:2888"
       - "{{ 3888 + groups['zookeepers'].index(inventory_hostname) }}:3888"
+    pull: "{{ zookeeper.pull_zookeeper | default(true) }}"
 
 - name: wait until the Zookeeper in this host is up and running
-  action: shell (echo ruok; sleep 1) | nc -w 3 -i 3 {{ ansible_host }} {{ zookeeper.port + groups['zookeepers'].index(inventory_hostname) }}
+  action: shell (echo ruok; sleep 1) | nc {{ ansible_host }} {{ zookeeper.port + groups['zookeepers'].index(inventory_hostname) }}
   register: result
   until: (result.rc == 0) and (result.stdout == 'imok')
-  retries: 32
+  retries: 36
   delay: 5

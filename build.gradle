@@ -61,7 +61,7 @@ subprojects {
             }
 
             dependencies {
-              compile group: 'redis.clients', name: 'jedis', version:'3.6.0'
+              compile group: 'redis.clients', name: 'jedis', version:'4.3.0'
             }
 
             tasks.withType(ScalaCompile) {
@@ -134,4 +134,3 @@ def configureUnixClasspath(File script) {
         }
         .join('\n')
 }
-

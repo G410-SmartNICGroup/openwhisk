@@ -212,7 +212,7 @@ case class StartMarker(start: Instant, startMarker: LogMarkerToken)
  * @param extraLogging enables logging, if set to true
  */
 protected case class TransactionMetadata(id: String,
-                                         start: Instant,
+                                         var start: Instant,
                                          extraLogging: Boolean = false,
                                          parent: Option[TransactionMetadata] = None) {
   override def toString = s"#tid_$id"

@@ -35,8 +35,6 @@
       - "{{ redis.port }}:6379"
     env:
       TZ: "{{ docker.timezone }}"
-    volumes:
-      - "/home/huazhang/openwhisk/redis.conf:/usr/local/etc/redis/redis.conf"
     command:
       /bin/sh -c
       "docker-entrypoint.sh --requirepass {{ redis.password }}"
