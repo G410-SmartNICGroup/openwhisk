@@ -47,7 +47,7 @@ protected[entity] abstract class Limits {
  * @param logs the limit for logs written by the container and stored in the activation record, assured to be non-null because it is a value
  * @param concurrency the limit on concurrently processed activations per container, assured to be non-null because it is a value
  */
-protected[core] case class ActionLimits(timeout: TimeLimit = TimeLimit(),
+protected[core] case class ActionLimits(var timeout: TimeLimit = TimeLimit(),
                                         memory: MemoryLimit = MemoryLimit(),
                                         logs: LogLimit = LogLimit(),
                                         concurrency: ConcurrencyLimit = ConcurrencyLimit())

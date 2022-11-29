@@ -17,6 +17,7 @@
 
 package org.apache.openwhisk.core.controller
 
+import java.time.Instant
 import scala.concurrent.Future
 import scala.concurrent.duration._
 import scala.util.{Failure, Success, Try}
@@ -260,6 +261,41 @@ trait WhiskActionsApi extends WhiskCollectionAPI with PostActionActivation with 
                   val allowInvoke = payload
                     .map(_.fields.keySet.forall(key => !actionWithMergedParams.immutableParameters.contains(key)))
                     .getOrElse(true)
+
+                  val args: Option[JsValue] = payload match {
+                    case Some(JsObject(fields))  => actionWithMergedParams.parameters merge Some(JsObject(fields))
+                    case _                       => Some(actionWithMergedParams.parameters.toJsObject)
+                  }
+                  val startTime = {
+                    args match {
+                      case Some(jsObj) => {
+                        jsObj.asJsObject.getFields("STARTTIME") match {
+                          case Seq(JsNumber(num)) => {
+                            transid.meta.start = Instant.ofEpochMilli(num.asInstanceOf[Number].longValue)
+                            transid.meta.start
+                          }
+                          case _ => None
+                        }
+                      }
+                      case _ => None
+                    }
+                  }
+
+                  val timeLimit = {
+                    args match {
+                      case Some(jsObj) => {
+                        jsObj.asJsObject.getFields("TIMELIMIT") match {
+                          case Seq(JsNumber(num)) => {
+                            actionWithMergedParams.limits.timeout = TimeLimit.apply(num.asInstanceOf[Number].longValue.millis)
+                            num
+                          }
+                          case _ => None
+                        }
+                      }
+                      case _ => None
+                    }
+                  }
+                  logging.info(this, s"Start Time: ${startTime}, Time Limit: ${timeLimit}")
 
                   if (allowInvoke) {
                     doInvoke(user, actionWithMergedParams, payload, blocking, waitOverride, result)

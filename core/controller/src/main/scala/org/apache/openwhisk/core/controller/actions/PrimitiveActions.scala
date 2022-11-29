@@ -191,22 +191,7 @@ protected[actions] trait PrimitiveActions {
       cause = cause,
       WhiskTracerProvider.tracer.getTraceContext(transid))
 
-    val startTime = {
-      args match {
-        case Some(jsObj) => {
-          jsObj.asJsObject.getFields("STARTTIME") match {
-            case Seq(JsNumber(num)) => {
-              transid.meta.start = Instant.ofEpochMilli(num.asInstanceOf[Number].longValue)
-              transid.meta.start
-            }
-            case _ => None
-          }
-        }
-        case _ => None
-      }
-    }
-
-    logging.info(this, s"Start Time: ${startTime} ms, meta start time: ${transid.meta.start}")
+    logging.info(this, s"Start Time: ${transid.meta.start}, Time Limit: ${action.limits.timeout}.")
 
     val postedFuture = loadBalancer.publish(action, message)
 
