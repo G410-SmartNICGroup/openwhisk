@@ -120,12 +120,20 @@ class LeastLoadBalancer(
 
     val isBlackboxInvocation = action.exec.pull
     val actionType = if (!isBlackboxInvocation) "managed" else "blackbox"
-    val (invokersToUse, stepSizes) = (schedulingState.invokers, schedulingState.managedStepSizes)
+    val (invokersToUse, stepSizes) =
+      if (!isBlackboxInvocation) (schedulingState.managedInvokers, schedulingState.managedStepSizes)
+      else (schedulingState.blackboxInvokers, schedulingState.blackboxStepSizes)
     val chosen = if (invokersToUse.nonEmpty) {
+      val hash = LeastLoadBalancer.generateHash(msg.user.namespace.name, action.fullyQualifiedName(false))
+      val homeInvoker = hash % invokersToUse.size
+      val stepSize = stepSizes(hash % stepSizes.size)
       val invoker: Option[(InvokerInstanceId, Boolean)] = LeastLoadBalancer.schedule(
+        action.limits.concurrency.maxConcurrent,
+        action.fullyQualifiedName(true),
         invokersToUse,
-        schedulingState,
-        action.limits.memory.megabytes.toDouble)
+        action.limits.memory.megabytes,
+        homeInvoker,
+        schedulingState)
       invoker.foreach {
         case (_, true) =>
           val metric =
@@ -234,6 +242,11 @@ object LeastLoadBalancer extends LoadBalancerProvider {
     )
   }
 
+  /** Generates a hash based on the string representation of namespace and action */
+  def generateHash(namespace: EntityName, action: FullyQualifiedEntityName): Int = {
+    (namespace.asString.hashCode() ^ action.asString.hashCode()).abs
+  }
+
   /**
    * Scans through all invokers and searches for an invoker tries to get a free slot on an invoker. If no slot can be
    * obtained, randomly picks a healthy invoker.
@@ -247,15 +260,24 @@ object LeastLoadBalancer extends LoadBalancerProvider {
    * @return an invoker to schedule to or None of no invoker is available
    */
   def schedule(
+    maxConcurrent: Int,
+    fqn: FullyQualifiedEntityName,
     invokers: IndexedSeq[InvokerHealth],
-    schedulingState: LeastLoadBalancerState,
-    memoryLimit: Double)(implicit logging: Logging, transId: TransactionId): Option[(InvokerInstanceId, Boolean)] = {
+    slots: Int,
+    index: Int,
+    schedulingState: LeastLoadBalancerState)(implicit logging: Logging, transId: TransactionId): Option[(InvokerInstanceId, Boolean)] = {
 
-    val availableInvokers = invokers.filter(invoker => schedulingState.getMem(invoker.id) >= memoryLimit)
-
-    if (availableInvokers.size > 0) {
-      val invoker = leastLoad(availableInvokers, schedulingState)
-      Some(invoker.id, false)
+    if (invokers.size > 0) {
+      val dispatched = schedulingState.invokerSlots
+      val invoker = invokers(index)
+      //test this invoker - if this action supports concurrency, use the scheduleConcurrent function
+      if (invoker.status.isUsable && dispatched(invoker.id.toInt).tryAcquireConcurrent(fqn, maxConcurrent, slots)) {
+        Some(invoker.id, false)
+      } else {
+        val invoker = leastLoad(invokers, schedulingState)
+        dispatched(invoker.id.toInt).forceAcquireConcurrent(fqn, maxConcurrent, slots)
+        Some(invoker.id, false)
+      }
     } else {
       None
     }
