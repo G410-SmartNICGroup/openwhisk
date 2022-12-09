@@ -35,6 +35,7 @@ import org.apache.openwhisk.core.entity.size.SizeLong
 import org.apache.openwhisk.core.controller.Controller
 import org.apache.openwhisk.core.{ConfigKeys, WhiskConfig}
 import org.apache.openwhisk.spi.SpiLoader
+import spray.json._
 
 import scala.concurrent.Future
 
@@ -118,6 +119,20 @@ class LeastLoadBalancer(
   override def publish(action: ExecutableWhiskActionMetaData, msg: ActivationMessage)(
     implicit transid: TransactionId): Future[Future[Either[ActivationId, WhiskActivation]]] = {
 
+    val selectedInvoker = {
+      msg.content match {
+        case Some(jsObj) => {
+          jsObj.asJsObject.getFields("INVOKER") match {
+            case Seq(JsNumber(num)) => {
+              num.intValue()
+            }
+            case _ => -1
+          }
+        }
+        case _ => -1
+      }
+    }
+
     val isBlackboxInvocation = action.exec.pull
     val actionType = if (!isBlackboxInvocation) "managed" else "blackbox"
     val (invokersToUse, stepSizes) =
@@ -133,7 +148,8 @@ class LeastLoadBalancer(
         invokersToUse,
         action.limits.memory.megabytes,
         homeInvoker,
-        schedulingState)
+        schedulingState,
+        selectedInvoker)
       invoker.foreach {
         case (_, true) =>
           val metric =
@@ -265,11 +281,18 @@ object LeastLoadBalancer extends LoadBalancerProvider {
     invokers: IndexedSeq[InvokerHealth],
     slots: Int,
     index: Int,
-    schedulingState: LeastLoadBalancerState)(implicit logging: Logging, transId: TransactionId): Option[(InvokerInstanceId, Boolean)] = {
+    schedulingState: LeastLoadBalancerState,
+    selectedInvoker: Int)(implicit logging: Logging, transId: TransactionId): Option[(InvokerInstanceId, Boolean)] = {
 
     if (invokers.size > 0) {
       val dispatched = schedulingState.invokerSlots
-      val invoker = invokers(index)
+      val invoker = {
+        if (selectedInvoker >= 0 && selectedInvoker < invokers.size) {
+          invokers(selectedInvoker)
+        } else {
+          invokers(index)
+        }
+      }
       //test this invoker - if this action supports concurrency, use the scheduleConcurrent function
       if (invoker.status.isUsable && dispatched(invoker.id.toInt).tryAcquireConcurrent(fqn, maxConcurrent, slots)) {
         Some(invoker.id, false)
