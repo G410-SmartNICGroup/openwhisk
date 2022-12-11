@@ -19,6 +19,7 @@ package org.apache.openwhisk.core.loadBalancer
 
 import akka.actor.ActorRef
 import akka.actor.ActorRefFactory
+import java.util.concurrent.ThreadLocalRandom
 
 import akka.actor.{Actor, ActorSystem, Props}
 import akka.cluster.ClusterEvent._
@@ -133,6 +134,21 @@ class LeastLoadBalancer(
       }
     }
 
+    //1: LL, otherwise: default
+    val mode = {
+      msg.content match {
+        case Some(jsObj) => {
+          jsObj.asJsObject.getFields("MODE") match {
+            case Seq(JsNumber(num)) => {
+              num.intValue()
+            }
+            case _ => 0
+          }
+        }
+        case _ => 0
+      }
+    }
+
     val isBlackboxInvocation = action.exec.pull
     val actionType = if (!isBlackboxInvocation) "managed" else "blackbox"
     val (invokersToUse, stepSizes) =
@@ -142,14 +158,29 @@ class LeastLoadBalancer(
       val hash = LeastLoadBalancer.generateHash(msg.user.namespace.name, action.fullyQualifiedName(false))
       val homeInvoker = hash % invokersToUse.size
       val stepSize = stepSizes(hash % stepSizes.size)
-      val invoker: Option[(InvokerInstanceId, Boolean)] = LeastLoadBalancer.schedule(
-        action.limits.concurrency.maxConcurrent,
-        action.fullyQualifiedName(true),
-        invokersToUse,
-        action.limits.memory.megabytes,
-        homeInvoker,
-        schedulingState,
-        selectedInvoker)
+      val invoker: Option[(InvokerInstanceId, Boolean)] = {
+        if (mode == 1) {
+          LeastLoadBalancer.scheduleLL(
+            action.limits.concurrency.maxConcurrent,
+            action.fullyQualifiedName(true),
+            invokersToUse,
+            action.limits.memory.megabytes,
+            homeInvoker,
+            schedulingState,
+            selectedInvoker
+          )
+        } else {
+          LeastLoadBalancer.scheduleDefault(
+            action.limits.concurrency.maxConcurrent,
+            action.fullyQualifiedName(true),
+            invokersToUse,
+            schedulingState.invokerSlots,
+            action.limits.memory.megabytes,
+            homeInvoker,
+            stepSize
+          )
+        }
+      } 
       invoker.foreach {
         case (_, true) =>
           val metric =
@@ -275,7 +306,7 @@ object LeastLoadBalancer extends LoadBalancerProvider {
    * @param step stable identifier of the entity to be scheduled
    * @return an invoker to schedule to or None of no invoker is available
    */
-  def schedule(
+  def scheduleLL(
     maxConcurrent: Int,
     fqn: FullyQualifiedEntityName,
     invokers: IndexedSeq[InvokerHealth],
@@ -300,6 +331,45 @@ object LeastLoadBalancer extends LoadBalancerProvider {
         val invoker = leastLoad(invokers, schedulingState)
         dispatched(invoker.id.toInt).forceAcquireConcurrent(fqn, maxConcurrent, slots)
         Some(invoker.id, false)
+      }
+    } else {
+      None
+    }
+  }
+
+  def scheduleDefault(
+    maxConcurrent: Int,
+    fqn: FullyQualifiedEntityName,
+    invokers: IndexedSeq[InvokerHealth],
+    dispatched: IndexedSeq[NestedSemaphore[FullyQualifiedEntityName]],
+    slots: Int,
+    index: Int,
+    step: Int,
+    stepsDone: Int = 0)(implicit logging: Logging, transId: TransactionId): Option[(InvokerInstanceId, Boolean)] = {
+    val numInvokers = invokers.size
+
+    if (numInvokers > 0) {
+      val invoker = invokers(index)
+      //test this invoker - if this action supports concurrency, use the scheduleConcurrent function
+      if (invoker.status.isUsable && dispatched(invoker.id.toInt).tryAcquireConcurrent(fqn, maxConcurrent, slots)) {
+        Some(invoker.id, false)
+      } else {
+        // If we've gone through all invokers
+        if (stepsDone == numInvokers + 1) {
+          val healthyInvokers = invokers.filter(_.status.isUsable)
+          if (healthyInvokers.nonEmpty) {
+            // Choose a healthy invoker randomly
+            val random = healthyInvokers(ThreadLocalRandom.current().nextInt(healthyInvokers.size)).id
+            dispatched(random.toInt).forceAcquireConcurrent(fqn, maxConcurrent, slots)
+            logging.warn(this, s"system is overloaded. Chose invoker${random.toInt} by random assignment.")
+            Some(random, true)
+          } else {
+            None
+          }
+        } else {
+          val newIndex = (index + step) % numInvokers
+          scheduleDefault(maxConcurrent, fqn, invokers, dispatched, slots, newIndex, step, stepsDone + 1)
+        }
       }
     } else {
       None
@@ -458,12 +528,7 @@ case class LeastLoadBalancerState(
   }
 
   def getLoad(invoker: InvokerInstanceId) : Double = {
-    val res = getResponse(invoker.toInt, 0)
-    logging.info(
-      this,
-      s"${invoker}'s CPU: ${res}%"
-    )
-    res
+    getResponse(invoker.toInt, 0)
   }
 
   def getMem(invoker: InvokerInstanceId) : Double = {
